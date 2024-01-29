@@ -11,6 +11,7 @@ import (
 	"time"
 
 	pb "github.com/coredns/coredns/plugin/shield_policy/proto"
+	"github.com/dgraph-io/ristretto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -21,6 +22,7 @@ import (
 
 var client = &http.Client{
 	Timeout: time.Second * 10,
+	// use http2:
 	// Transport: &http2.Transport{
 	// 	// So http2.Transport doesn't complain the URL scheme isn't 'https'
 	// 	AllowHTTP: true,
@@ -33,8 +35,11 @@ var client = &http.Client{
 }
 
 var grpcPolicyClient pb.PolicyManagerClient
+var cache *ristretto.Cache
 
 func init() {
+	// TODO put GRPC behind flag
+	// gRPC init
 	policyManagerHostname := "127.0.0.1"
 	grpcPort := "3002"
 	if inDocker {
@@ -54,11 +59,32 @@ func init() {
 
 	grpcPolicyClient = pb.NewPolicyManagerClient(conn)
 
+	// cache init
+	cache, err = ristretto.NewCache(&ristretto.Config{
+		NumCounters: 1e7,     // number of keys to track frequency of (10M).
+		MaxCost:     1 << 30, // maximum cost of cache (1GB).
+		BufferItems: 64,      // number of keys per Get buffer.
+		Metrics:     true,
+	})
+
+	if err != nil {
+		panic(err)
+	}
+
 }
 
 func queryPolicy(domain string, tenantID string) int {
+
+	cacheKey := domain + tenantID
+	value, hit := cache.Get(cacheKey)
+
+	if hit {
+		fmt.Println("cache hit")
+		return value.(int)
+	}
+
 	policyManagerHostname := "127.0.0.1"
-	port := "3001"
+	port := "3000"
 
 	if inDocker {
 		policyManagerHostname = "es-policy-manager.farm-services.svc.cluster.local"
@@ -114,6 +140,9 @@ func queryPolicy(domain string, tenantID string) int {
 	access := int(data["access"].(float64))
 	// fmt.Printf("Access policy from policy-manager: %v", access)
 	// fmt.Printf("Local Port: %s\n", body)
+
+	// TODO take cache TTL from consul
+	cache.SetWithTTL(cacheKey, access, 1, 600*time.Second)
 	return access
 }
 
