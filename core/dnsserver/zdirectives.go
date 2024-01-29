@@ -31,6 +31,7 @@ var Directives = []string{
 	"dnstap",
 	"local",
 	"dns64",
+	"shield_policy",
 	"acl",
 	"any",
 	"chaos",

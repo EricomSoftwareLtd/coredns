@@ -1,0 +1,12 @@
+https://.:443 {
+    tls ssl/cert.pem ssl/key.pem
+    debug
+    log
+    errors 
+    ready :8888
+    
+    cache
+    shield_policy
+    
+    forward . 1.1.1.1 8.8.8.8
+}

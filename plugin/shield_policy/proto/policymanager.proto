@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package policymanager;
+option go_package = "./policy_grpc";
+
+service PolicyManager {
+    // A simple RPC.
+    //
+    // Obtains the feature at a given position.
+    //
+    // A feature with an empty name is returned if there's no feature at the given
+    // position.
+    rpc GetPolicy(PolicyRequest) returns (PolicyResponse) {}
+}
+
+message PolicyRequest {
+    string url = 1;
+    string tenantID = 2;
+    string requestor = 3;
+    string user = 4;
+}
+
+   // TODO should use enums ?
+message PolicyResponse {
+    string url  = 1;
+    int32 profile  = 2;
+    string type  = 3;
+    int32 subdomain  = 4;
+    int32 download  = 5;
+    int32 upload  = 6;
+    int32 clipboard  = 7;
+    int32 cookies  = 8;
+    int32 access  = 9;
+    int32 suspend  = 10;
+    int32 printing  = 11;
+    int32 ignore_cert_errors  = 12;
+    int32 media  = 13;
+    int32 adblock  = 14;
+    int32 readonly  = 15;
+    int32 white_av  = 16;
+    int32 autofill  = 17;
+    int32 client_cert  = 18;
+    int32 dlp  = 19;
+    int32 inherit_white_cookies  = 20;
+    int32 control_headers  = 21;
+    int32 vmi_screen_sharing  = 22;
+    int32 video_playback  = 23;
+    int32 download_ftr  = 24;
+    int32 upload_ftr  = 25;
+    int32 experimental_browser  = 26;
+    string comment  = 27;
+    string profileName  = 28;
+    string downloadCdrNamedPolicy  = 29;
+    string uploadCdrNamedPolicy  = 30;
+    string downloadFtrNamedPolicy  = 31;
+    string uploadFtrNamedPolicy  = 32;
+    int32 securityGroupID  = 33;
+    string categoryGroupName  = 34;
+    string categoryPrimaryName  = 35;
+    string matchedOn  = 36;
+}
