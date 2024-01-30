@@ -71,7 +71,7 @@ func NewServerHTTPS(addr string, group []*Config) (*ServerHTTPS, error) {
 		}
 	}
 	if validator == nil {
-		validator = func(r *http.Request) bool { return r.URL.Path == doh.Path || r.URL.Path == "/" }
+		validator = func(r *http.Request) bool { return r.URL.Path == doh.Path }
 	}
 
 	srv := &http.Server{

@@ -94,7 +94,7 @@ func queryPolicy(domain string, tenantID string) int {
 	policyManagerURL := fmt.Sprintf("http://%s:%s/getpolicy", policyManagerHostname, port)
 
 	// fmt.Printf("requesting policy manager: %v %v\n", domain, tenantID)
-	requestBody, err := json.Marshal(map[string]interface{}{
+	requestBody, err := json.Marshal(map[string]any{
 		"url":       domain,
 		"user":      "-",
 		"requestor": "es-doh",
@@ -131,7 +131,7 @@ func queryPolicy(domain string, tenantID string) int {
 		return 0
 	}
 
-	var data map[string]interface{}
+	var data map[string]any
 
 	if err := json.Unmarshal(body, &data); err != nil {
 		fmt.Println("Error parsing JSON response", err)
@@ -146,6 +146,7 @@ func queryPolicy(domain string, tenantID string) int {
 	return access
 }
 
+// this is probably incomplete, check above
 func queryPolicyGRPC(domain string, tenantID string) int {
 	req := &pb.PolicyRequest{
 		Url:       domain,

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/coredns/coredns/plugin"
@@ -18,24 +17,11 @@ import (
 	"github.com/coredns/coredns/core/dnsserver"
 )
 
-// Q what is scope of POC?
-// - containerize
-// - benchmark
-// real system with DoH to test?
-//
-
-// /// TODO do caching:
-//		- custom cache (Ristretto ?) in in policy manager client
-//		- http caching with policy manager support
-
 // TODO lower TTL on all requests, becaus allowed request gets TTL from upstream ?
 // TODO only handle A
 // TODO add TLS certs??
 // TODO IPV6 ? AAAA queries?
 // TODO use env vars
-// TODO use Consul
-// TODO security.js: API Auth
-// https://github.com/valyala/fasthttp looks good
 
 // Define log to be a logger with the plugin name in it. This way we can just use log.Info etc.
 var log = clog.NewWithPlugin("shield_policy")
@@ -49,10 +35,7 @@ var BLOCK_IP net.IP
 // init registers this plugin.
 func init() {
 	plugin.Register("shield_policy", setup)
-	block_address := os.Getenv("BLOCKADDRESS")
-	if block_address == "" {
-		block_address = "129.159.157.83"
-	}
+	block_address := getEnv("BLOCKADDRESS", "129.159.157.83")
 	BLOCK_IP = net.ParseIP(block_address).To4()
 }
 
@@ -68,7 +51,12 @@ func setup(c *caddy.Controller) error {
 	}
 
 	// Add the Plugin to CoreDNS, so Servers can use it in their plugin chain.
-	dnsserver.GetConfig(c).AddPlugin(func(next plugin.Handler) plugin.Handler {
+	config := dnsserver.GetConfig(c)
+	config.HTTPRequestValidateFunc = func(r *http.Request) bool {
+		return r.URL.Path == "/" || r.URL.Path == "/dns-query"
+	}
+
+	config.AddPlugin(func(next plugin.Handler) plugin.Handler {
 		return ShieldPolicyPlugin{Next: next}
 	})
 
@@ -105,7 +93,7 @@ func (e ShieldPolicyPlugin) ServeDNS(ctx context.Context, writer dns.ResponseWri
 	// accessPolicy := queryPolicyGRPC(domain, tenantId)
 	// accessPolicy := 1
 
-	// TODO don't use %v everywhere
+	// TODO don't use %v everywhere ?
 	log.Info(fmt.Sprintf("domain: %v source: %v tenantId: %v policy: %v  \n", domain, source, tenantId, accessPolicy))
 
 	switch accessPolicy {
