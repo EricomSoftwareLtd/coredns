@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -15,8 +16,9 @@ import (
 
 type ServiceConfig struct {
 	debugLevel     string
-	tenantSettings map[string]TenantSettings
+	tenantSettings map[string]*TenantSettings
 	tenantHashes   map[string]int
+	ready          chan bool
 	sync.RWMutex
 }
 
@@ -26,9 +28,15 @@ type RateLimitSettings struct {
 	enabled             bool
 }
 
+var DEFAULT_RATE_LIMIT_SETTINGS = RateLimitSettings{
+	requestsPerInterval: 100,
+	intervalSeconds:     60,
+	enabled:             true,
+}
+
 type TenantSettings struct {
 	mode        string
-	serviceKeys []TenantAdministratorsJSON
+	serviceKeys []string
 	rateLimit   RateLimitSettings
 	blockIP     string
 }
@@ -40,16 +48,16 @@ type TenantInfoJSON struct {
 }
 
 type TenantAdministratorsJSON struct {
-	username      string
-	passwordHash  string
+	Username      string `json:"username"`
+	PasswordHash  string `json:"passwordHash"`
+	Role          string `json:"role"`
+	Email         string `json:"email"`
+	Notifications bool   `json:"notifications"`
 	Type          string `json:"type"`
-	role          string
-	email         string
-	notifications bool
 }
 
 type TenantSettingsJSON struct {
-	doh_blockIP string
+	Doh_blockIP string `json:"doh_blockIP"`
 }
 
 const TENANT_HASHES_CHECK_INTERVAL = 5 * time.Minute
@@ -57,6 +65,7 @@ const TENANT_HASHES_CHECK_INTERVAL = 5 * time.Minute
 var KEYS_STEP = getEnvInt("KEYS_STEP", 1000)
 var KEYS_SLEEP_SEC = getEnvInt("KEYS_SLEEP_SEC", 1)
 
+// TODO refactor into class
 var consulClient *consul.Client
 var config *ServiceConfig
 var timestampLastKVChangeProcessing = time.Now().Unix()
@@ -66,8 +75,9 @@ func init() {
 	var err error
 	config = &ServiceConfig{
 		debugLevel:     "info",
-		tenantSettings: map[string]TenantSettings{},
+		tenantSettings: map[string]*TenantSettings{},
 		tenantHashes:   map[string]int{},
+		ready:          make(chan bool),
 	}
 
 	consulClient, err = consul.NewClient(&consul.Config{
@@ -88,7 +98,12 @@ func init() {
 
 }
 
-func watchTenantSettings() {
+func WaitConfigReady() {
+	<-config.ready
+	fmt.Printf("Consul init ready\n")
+}
+
+func watchTenantSettings() { // TODO split this in two: init and watch
 	var tenantIDs []string
 	if err := consulGetJSON("tenantView/IDs", &tenantIDs); err != nil {
 		fmt.Println(err)
@@ -117,6 +132,8 @@ func watchTenantSettings() {
 	}
 
 	fmt.Printf("settings: %+v\n", config)
+
+	config.ready <- true
 
 	runIntervalBetween(checkHashesInterval, TENANT_HASHES_CHECK_INTERVAL)
 
@@ -210,10 +227,12 @@ func updateTenantSettings(tenantId string) bool {
 	}
 
 	for _, value := range tenantAdmins {
-		if value.Type == "Service key" {
-			settings.serviceKeys = append(settings.serviceKeys, value)
+		if value.Type == "Service Key" {
+			settings.serviceKeys = append(settings.serviceKeys, value.PasswordHash)
 		}
 	}
+
+	slices.Sort(settings.serviceKeys)
 
 	var tenantSettings TenantSettingsJSON
 	if err := consulGetJSON(fmt.Sprintf("tenantSettings/%s/settings", tenantId), &tenantSettings); err != nil {
@@ -221,10 +240,10 @@ func updateTenantSettings(tenantId string) bool {
 		return false
 	}
 
-	settings.blockIP = tenantSettings.doh_blockIP
+	settings.blockIP = tenantSettings.Doh_blockIP
 
 	config.RWMutex.Lock()
-	config.tenantSettings[tenantId] = *settings
+	config.tenantSettings[tenantId] = settings
 	config.RWMutex.Unlock()
 
 	return true
@@ -264,6 +283,38 @@ func consulWatchJSON[T any](key string, callback func(data T)) {
 		}
 		callback(data)
 	}
+}
+
+func getDoHMode(tenantID string, token string) string {
+	if tenantID == "" || token == "" {
+		return "None" // TODO enums??
+	}
+
+	config.RLock()
+	defer config.RUnlock()
+	tenant := config.tenantSettings[tenantID]
+
+	if tenant == nil || tenant.mode == "" || tenant.mode == "None" {
+		return "None"
+	}
+
+	_, found := slices.BinarySearch(tenant.serviceKeys, token)
+
+	if !found {
+		return "None"
+	}
+
+	return tenant.mode
+}
+
+func getRateLimit(tenantID string) *RateLimitSettings {
+	config.RLock()
+	defer config.RUnlock()
+	tenant := config.tenantSettings[tenantID]
+	if tenant == nil {
+		return &DEFAULT_RATE_LIMIT_SETTINGS
+	}
+	return &tenant.rateLimit
 }
 
 func getTenantHash(tenantId string) int {

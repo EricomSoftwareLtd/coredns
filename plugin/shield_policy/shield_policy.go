@@ -15,6 +15,7 @@ import (
 
 	"github.com/coredns/caddy"
 	"github.com/coredns/coredns/core/dnsserver"
+	ratelimit "github.com/coredns/coredns/plugin/shield_policy/ratelimit"
 )
 
 // TODO lower TTL on all requests, becaus allowed request gets TTL from upstream ?
@@ -35,7 +36,7 @@ var BLOCK_IP net.IP
 // init registers this plugin.
 func init() {
 	plugin.Register("shield_policy", setup)
-	block_address := getEnv("BLOCKADDRESS", "129.159.157.83")
+	block_address := getEnv("BLOCKADDRESS", "129.159.157.83") // TODO get from consul, move this to settings.go
 	BLOCK_IP = net.ParseIP(block_address).To4()
 }
 
@@ -50,10 +51,39 @@ func setup(c *caddy.Controller) error {
 		return plugin.Error("shield_policy", c.ArgErr())
 	}
 
+	WaitConfigReady()
+
+	rateLimits := ratelimit.NewGroup()
+
 	// Add the Plugin to CoreDNS, so Servers can use it in their plugin chain.
 	config := dnsserver.GetConfig(c)
-	config.HTTPRequestValidateFunc = func(r *http.Request) bool {
-		return r.URL.Path == "/" || r.URL.Path == "/dns-query"
+
+	config.HTTPRequestValidateFunc = func(req *http.Request) bool {
+		if !(req.URL.Path == "/" || req.URL.Path == "/dns-query") {
+			return false
+		}
+		tenantID := getReqTenantId(req)
+		token := getReqBearerToken(req)
+
+		mode := getDoHMode(tenantID, token)
+
+		if mode == "None" {
+			return false
+		}
+
+		rateLimitSettings := getRateLimit(tenantID)
+
+		if rateLimitSettings.enabled {
+			rateLimit := rateLimits.GetLimiterWithSettings(
+				tenantID,
+				float64(rateLimitSettings.requestsPerInterval)/float64(rateLimitSettings.intervalSeconds),
+				rateLimitSettings.requestsPerInterval)
+
+			return rateLimit.Allow()
+		}
+
+		return true
+
 	}
 
 	config.AddPlugin(func(next plugin.Handler) plugin.Handler {
@@ -80,14 +110,14 @@ func (e ShieldPolicyPlugin) ServeDNS(ctx context.Context, writer dns.ResponseWri
 
 	domain := strings.Trim(query.Question[0].Name, ".") // TODO might panic if nil
 	source := state.IP()
-	request := ctx.Value(dnsserver.HTTPRequestKey{}).(*http.Request)
+	req := ctx.Value(dnsserver.HTTPRequestKey{}).(*http.Request)
 
-	if request == nil { // TODO this request is not over HTTP, what do?
+	if req == nil { // this request is not over HTTP, do not handle
 		return plugin.NextOrFailure(e.Name(), e.Next, ctx, writer, query)
 	}
 
 	// TODO also try :authority header ? I think go deals with it by itself
-	tenantId := strings.Split(strings.Split(request.Host, ":")[0], ".")[0]
+	tenantId := getReqTenantId(req)
 
 	accessPolicy := queryPolicy(domain, tenantId)
 	// accessPolicy := queryPolicyGRPC(domain, tenantId)
@@ -124,3 +154,17 @@ func (e ShieldPolicyPlugin) ServeDNS(ctx context.Context, writer dns.ResponseWri
 
 // Name implements the Handler interface.
 func (e ShieldPolicyPlugin) Name() string { return "shield_policy" }
+
+func getReqTenantId(req *http.Request) string {
+	before, _, _ := strings.Cut(req.Host, ".")
+	return before
+}
+
+func getReqBearerToken(req *http.Request) string {
+	authorization := req.Header.Get("authorization")
+	token, found := strings.CutPrefix(authorization, "Bearer ")
+	if !found {
+		return ""
+	}
+	return token
+}
