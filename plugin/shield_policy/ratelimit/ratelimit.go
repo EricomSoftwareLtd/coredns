@@ -55,7 +55,6 @@ func (group *RateLimitGroup) GetLimiterWithSettings(id string, limitPerSec float
 func (pool *RateLimitGroup) periodicCleanup() {
 	for {
 		time.Sleep(time.Minute)
-		// Lock the mutex to protect this section from race conditions.
 		pool.Lock()
 		for id, client := range pool.limiters {
 			if time.Since(client.lastSeen) > 3*time.Minute {
@@ -67,6 +66,6 @@ func (pool *RateLimitGroup) periodicCleanup() {
 }
 
 func (l *RateLimit) Allow() bool {
-	l.lastSeen = time.Now()
+	l.lastSeen = time.Now() // TODO data race with periodicCleanup, fix with atomics?
 	return l.limiter.Allow()
 }

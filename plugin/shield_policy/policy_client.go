@@ -10,10 +10,13 @@ import (
 	"os"
 	"time"
 
+	"github.com/coredns/coredns/plugin/shield_policy/logs"
 	pb "github.com/coredns/coredns/plugin/shield_policy/proto"
 	"github.com/dgraph-io/ristretto"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // TODO use struct with json fields defined
@@ -62,7 +65,7 @@ func init() {
 	// cache init
 	cache, err = ristretto.NewCache(&ristretto.Config{
 		NumCounters: 1e7,     // number of keys to track frequency of (10M).
-		MaxCost:     1 << 30, // maximum cost of cache (1GB).
+		MaxCost:     1 << 29, // maximum cost of cache 512MB.
 		BufferItems: 64,      // number of keys per Get buffer.
 		Metrics:     true,
 	})
@@ -73,18 +76,18 @@ func init() {
 
 }
 
-func queryPolicy(domain string, tenantID string) int {
+// TODO refactor to use context, refactor into a class
+func queryPolicy(logger *logs.CustomLogger, domain string, tenantID string) (*pb.PolicyResponse, error) {
 
 	cacheKey := domain + tenantID
 	value, hit := cache.Get(cacheKey)
 
 	if hit {
-		fmt.Println("cache hit")
-		return value.(int)
+		return value.(*pb.PolicyResponse), nil
 	}
 
 	policyManagerHostname := "127.0.0.1"
-	port := "3000"
+	port := "3001"
 
 	if inDocker {
 		policyManagerHostname = "es-policy-manager.farm-services.svc.cluster.local"
@@ -100,15 +103,16 @@ func queryPolicy(domain string, tenantID string) int {
 		"requestor": "es-doh",
 		"tenantID":  tenantID,
 	})
+	// TODO re-format all errors
 	if err != nil {
 		fmt.Println("Error marshaling JSON:", err)
-		return 0
+		return nil, err
 	}
 
 	req, err := http.NewRequest("POST", policyManagerURL, bytes.NewBuffer(requestBody))
 	if err != nil {
 		fmt.Println("Error creating HTTP request:", err)
-		return 0
+		return nil, err
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -116,34 +120,42 @@ func queryPolicy(domain string, tenantID string) int {
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Println("Error making HTTP request:", err)
-		return 0
+		logger.Error("error making HTTP request", zap.Error(err))
+		return nil, err
 	}
 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		fmt.Printf("Failed getting policy for domain '%s': %d %s\n", domain, resp.StatusCode, resp.Status)
-		return 0
+		return nil, err
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		fmt.Println("Error reading response body:", err)
-		return 0
+		return nil, err
 	}
 
-	var data map[string]any
-
-	if err := json.Unmarshal(body, &data); err != nil {
+	data := &pb.PolicyResponse{}
+	if protojson.Unmarshal(body, data); err != nil {
 		fmt.Println("Error parsing JSON response", err)
+		return nil, err
 	}
 
-	access := int(data["access"].(float64))
+	// var data map[string]any
+
+	// if err := json.Unmarshal(body, &data); err != nil {
+	// 	fmt.Println("Error parsing JSON response", err)
+	// }
+
+	// access := int(data["access"].(float64))
+
 	// fmt.Printf("Access policy from policy-manager: %v", access)
 	// fmt.Printf("Local Port: %s\n", body)
 
 	// TODO take cache TTL from consul
-	cache.SetWithTTL(cacheKey, access, 1, 600*time.Second)
-	return access
+	cache.SetWithTTL(cacheKey, data, 1, 600*time.Second)
+	return data, nil
 }
 
 // this is probably incomplete, check above
